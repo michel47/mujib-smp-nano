@@ -1,13 +1,34 @@
+function isTopFrame() {
+  try {
+    return window.top === window;
+  } catch {
+    return false;
+  }
+}
+
+function isHttps() {
+  return location.protocol === "https:";
+}
+
 function findPasswordField() {
-  const pw = document.querySelector('input[type="password"]');
-  return pw || null;
+  //Mujib (Naive MVP): real sites may need heuristics, shadow DOM, multi-step flows, etc.
+  return document.querySelector('input[type="password"]');
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type !== "SMPNANO_FILL") return;
-  //find 'input[type="password"]' to the relevant site to login.
+
+  // Clickjacking/iframe mitigation
+  if (!isTopFrame()) return;
+
+  // HTTPS-only fill
+  if (!isHttps()) return;
+
   const pwField = findPasswordField();
-  if (!pwField) return;
+  if (!pwField) {
+  alert("No password field found on this page.");
+    return;
+  }
 
   pwField.focus();
   pwField.value = msg.password;

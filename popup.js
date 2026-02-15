@@ -1,102 +1,101 @@
 const $ = (id) => document.getElementById(id);
 
-let lastPw = "";
-let lastSite = "";
+let lastPw = ""; // short-lived UI display/copy only
+let lastCtx = null; // { tabId, domain, url, expiresAt }
 
-async function getActiveTabUrl() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab?.url || "";
-}
-
-// Minimal domain normalize.
 function normalizeDomain(urlStr) {
   try {
     const u = new URL(urlStr);
+    // Security: refuse non-https contexts by default
     if (u.protocol !== "https:") return "insecure";
-
+    // Mujib: TODO (production): use eTLD+1 (Public Suffix List) parsing
     return u.hostname.replace(/^www\./, "");
   } catch {
     return "unknown";
   }
 }
 
-function toBase64Url(bytes) {
-  const bin = String.fromCharCode(...bytes);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+async function getActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab || null;
 }
 
-function mapToCharset(bytes, charset, length) {
-  const out = [];
-  for (let i = 0; i < length; i++) out.push(charset[bytes[i] % charset.length]);
-  return out.join("");
+function sendToSW(message) {
+  return new Promise((resolve) => chrome.runtime.sendMessage(message, resolve));
 }
 
-function enforceComplexity(pw) {
-  const sym = "!@#$%^&*()-_=+[]{};:,.?";
-  let s = pw.split("");
-
-  const needLower = !/[a-z]/.test(pw);
-  const needUpper = !/[A-Z]/.test(pw);
-  const needDigit = !/[0-9]/.test(pw);
-  const needSym = !/[^A-Za-z0-9]/.test(pw);
-
-  if (needLower) s[0] = String.fromCharCode(97 + (s[0].charCodeAt(0) % 26));
-  if (needUpper) s[1] = String.fromCharCode(65 + (s[1].charCodeAt(0) % 26));
-  if (needDigit) s[2] = String.fromCharCode(48 + (s[2].charCodeAt(0) % 10));
-  if (needSym) s[3] = sym[s[3].charCodeAt(0) % sym.length];
-
-  return s.join("");
+function validateMasterSecret(master) {
+  if (master.length < 8) {
+    return "Master secret must be at least 8 characters.";
+  }
+  if (!/[A-Za-z]/.test(master)) {
+    return "Master secret must contain letters.";
+  }
+  if (!/[0-9]/.test(master)) {
+    return "Master secret must contain numbers.";
+  }
+  if (!/[^A-Za-z0-9]/.test(master)) {
+    return "Master secret must contain a special character.";
+  }
+  return null;
 }
 
-async function derivePassword({ master, site, user, counter, length, mode }) {
-  const enc = new TextEncoder();
-  //Steps to derive password  
-  // 1) PBKDF2(master, salt=site) -> HMAC key
-  const masterKey = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(master),
-    "PBKDF2",
-    false,
-    ["deriveKey"]
-  );
+function phishingWarning(domain) {
+  if (!domain) return null;
 
-  const salt = enc.encode(`smp-nano|${site}`);
-  const hmacKey = await crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 200_000, hash: "SHA-256" },
-    masterKey,
-    { name: "HMAC", hash: "SHA-256", length: 256 },
-    false,
-    ["sign"]
-  );
-
-  // 2) HMAC(site|user|counter) -> bytes
-  const msg = enc.encode(`${site}|${user || ""}|${counter}`);
-  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", hmacKey, msg));
-
-  // 3) Encode
-  let pw = "";
-  if (mode === "base64url") {
-    pw = toBase64Url(sig).slice(0, length);
-  } else {
-    const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{};:,.?";
-    pw = mapToCharset(sig, charset, length);
+  // punycode warning (xn-- often used in IDN attacks)
+  if (domain.includes("xn--")) {
+    return "Suspicious domain (punycode detected). Check carefully.";
   }
 
-  // 4) Complexity tweak
-  pw = enforceComplexity(pw).slice(0, length);
-  return pw;
+  // very long domain warning
+  if (domain.length > 40) {
+    return "Unusually long domain name. Verify carefully.";
+  }
+
+  // many hyphens can be suspicious
+  if ((domain.match(/-/g) || []).length >= 4) {
+    return "Domain contains many hyphens. Possible phishing.";
+  }
+
+  return null;
 }
 
 async function mainInit() {
-  const url = await getActiveTabUrl();
-  lastSite = normalizeDomain(url);
-  $("siteLine").textContent = `Site: ${lastSite}`;
+  const tab = await getActiveTab();
+  const url = tab?.url || "";
+  const domain = normalizeDomain(url);
+  const warn = phishingWarning(domain);
+  if (warn) {
+    $("out").textContent = warn + " Generation blocked.";
+    return;
+  }
+  $("siteLine").textContent = `Site: ${domain}`;
+  if (domain === "insecure" || domain === "unknown") {
+    $("out").textContent = "Unsupported or insecure page. Open an https:// site.";
+    $("gen").disabled = true;
+  }
 }
 
 $("gen").addEventListener("click", async () => {
   const master = $("master").value;
-  if (!master) {
-    $("out").textContent = "Enter master secret.";
+  const err = validateMasterSecret(master);
+  if (err) {
+    $("out").textContent = err;
+    return;
+  }
+
+  const tab = await getActiveTab();
+  if (!tab?.id || !tab?.url) {
+    $("out").textContent = "No active tab found.";
+    return;
+  }
+
+  const url = tab.url;
+  const domain = normalizeDomain(url);
+
+  if (domain === "insecure" || domain === "unknown") {
+    $("out").textContent = "Refusing to generate on insecure/unknown site.";
     return;
   }
 
@@ -107,33 +106,95 @@ $("gen").addEventListener("click", async () => {
 
   $("out").textContent = "Generating…";
 
-  const pw = await derivePassword({ master, site: lastSite, user, counter, length, mode });
-  lastPw = pw;
+  // Send derivation request to service worker (keeps crypto out of popup UI)
+  const resp = await sendToSW({
+    type: "SMDNANO_GENERATE",
+    master,
+    tabId: tab.id,
+    url,
+    domain,
+    user,
+    counter,
+    length,
+    mode,
+  });
 
-  //Clearing the master input immediately
+  // Best-effort: clear master input immediately
   $("master").value = "";
 
-  $("out").textContent = pw;
+  if (!resp?.ok) {
+    $("out").textContent = `${resp?.error || "Generation failed"}`;
+    $("copy").disabled = true;
+    $("fill").disabled = true;
+    lastPw = "";
+    lastCtx = null;
+    return;
+  }
+
+  lastPw = resp.password; // for UI display/copy only
+  lastCtx = resp.ctx;     // { tabId, domain, url, expiresAt }
+
+  //$("siteLine").textContent = `Site: ${lastCtx.domain}`;
+  $("siteLine").innerHTML = `<b>Site:</b> ${lastCtx.domain}`;
+
+
+  $("out").textContent = "Password generated";
+  $("gen").textContent = "Generated";
   $("copy").disabled = false;
   $("fill").disabled = false;
+
+});
+
+$("master").addEventListener("input", () => {
+  $("gen").textContent = "Generate";
 });
 
 $("copy").addEventListener("click", async () => {
   if (!lastPw) return;
   await navigator.clipboard.writeText(lastPw);
+
+  // Optional security: auto-clear clipboard after 30s
+  setTimeout(() => navigator.clipboard.writeText("").catch(() => {}), 30000);
 });
 
 $("fill").addEventListener("click", async () => {
-  if (!lastPw) return;
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return;
+  if (!lastCtx) return;
 
-  // Send the derived password to content script for one-time fill
-  chrome.tabs.sendMessage(tab.id, { type: "SMPNANO_FILL", password: lastPw });
+  // Ask SW to fill using its cached password + context checks.
+  const resp = await sendToSW({
+    type: "SMPNANO_FILL",
+    tabId: lastCtx.tabId,
+  });
 
-  //clearing local variable after sending
+  if (!resp?.ok) {
+    $("out").textContent = `${resp?.error || "Fill refused"}`;
+    return;
+  }
+
+  // Best-effort: wipe local copies after fill
   lastPw = "";
+  lastCtx = null;
   $("fill").disabled = true;
+  $("copy").disabled = true;
+});
+
+chrome.tabs.onActivated.addListener(() => {
+  if (lastCtx) {
+    $("out").textContent = "Tab changed after generation. Please generate again.";
+    lastPw = "";
+    lastCtx = null;
+    $("fill").disabled = true;
+  }
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (lastCtx && tabId === lastCtx.tabId && changeInfo.url) {
+    $("out").textContent =
+      "Page changed after generation. Please generate again.";
+    lastPw = "";
+    lastCtx = null;
+    $("fill").disabled = true;
+  }
 });
 
 mainInit();
