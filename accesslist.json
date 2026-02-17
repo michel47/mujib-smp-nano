@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "created_at": "2026-02-16T18:30:00Z",
+  "mode": "DENY+ALLOW+EXCEPT",
+  "license_status": "VALID",
+  "license_expiry": "2026-05-17T00:00:00Z",
+  "rules": {
+    "allow": ["https://*","file://*"],
+    "deny": ["http://*", "https://*.evil.com/*"],
+    "except": ["http://localhost*", "http://127.0.0.1*", "https://safe.evil.com/*"]
+  },
+  "trusted_contexts": ["https://*", "http://localhost*", "http://127.0.0.1*", "file://*"],
+  "overrides": [
+    { "pattern": "^file:/", "salt": "smd-nano-files" },
+    { "pattern": "localhost", "salt": "smd-nano-mockup" }
+  ]
+}
