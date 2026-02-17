@@ -11,6 +11,10 @@ The extension is divided into four main components:
 *   **Content Script (`content.js`)**: A script injected into web pages to locate password fields and perform the final "fill" operation.
 *   **Manifest (`manifest.json`)**: Defines permissions, background scripts, and content script injection rules.
 
+### Drawing-board:
+
+-> [Exalidraw white board](https://excalidraw.com/#room=989b37473b8802295b0c,SwD3XmQvctTqOWXiEQ50ig)
+
 ## 2. Password Derivation Process
 
 The core of SMP Nano is its deterministic derivation engine. When a user clicks "Generate", the following steps occur:

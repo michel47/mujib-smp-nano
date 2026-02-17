@@ -1,24 +1,140 @@
 // In-memory cache only (vaultless): tabId -> { domain, url, password, expiresAt }
+// This Map is short-lived and never persisted to disk, mitigating extraction risks.
 const cache = new Map();
+let acl = null;
+
+async function loadACL() {
+  try {
+    const resp = await fetch(chrome.runtime.getURL('policy.json'));
+    acl = await resp.json();
+  } catch (e) {
+    console.error("Failed to load ACL:", e);
+  }
+}
+
+function patternToRegex(pattern) {
+  // If it looks like a regex (starts with ^), return it as is
+  if (pattern.startsWith("^")) return new RegExp(pattern, 'i');
+  
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+                         .replace(/\*/g, '.*')
+                         .replace(/\?/g, '.');
+  return new RegExp(`^${escaped}$`, 'i');
+}
+
+function checkAccess(url) {
+  if (!acl) return true; // Default to allow if ACL fails to load
+
+  const { mode, rules } = acl;
+  const matches = (list) => list.some(p => patternToRegex(p).test(url));
+
+  if (mode === "DENY+ALLOW+EXCEPT") {
+    // Default: DENY
+    let allowed = false;
+    if (matches(rules.allow)) allowed = true;
+    if (matches(rules.deny)) allowed = false;
+    if (matches(rules.except)) allowed = true; // Final override
+    return allowed;
+  } else {
+    // Default: ALLOW (ALLOW+DENY+EXCEPT)
+    let allowed = true;
+    if (matches(rules.deny)) allowed = false;
+    if (matches(rules.allow)) allowed = true;
+    if (matches(rules.except)) allowed = false; // Final override
+    return allowed;
+  }
+}
+
+function getSaltLabel(domain, url, isDecoy) {
+  if (!acl) return isDecoy ? "smd-nano-decoy" : "smd-nano";
+
+  if (acl.license_status === "EXPIRED") return "smd-nano-expired";
+
+  // Check custom overrides (first match wins)
+  for (const entry of acl.overrides) {
+    if (patternToRegex(entry.pattern).test(domain) || patternToRegex(entry.pattern).test(url)) {
+      return entry.salt;
+    }
+  }
+
+  return isDecoy ? "smd-nano-decoy" : "smd-nano";
+}
+
+// Policy Engine: Centralized source of truth for security decisions
+async function getPolicy(url) {
+  if (!acl) await loadACL();
+  const { mode, rules, overrides, license_status, license_expiry, created_at } = acl;
+  
+  const matches = (list) => list.some(p => patternToRegex(p).test(url));
+  const domain = normalizeDomain(url);
+
+  // 1. Determine Access (ALLOW vs DENY)
+  let action = (mode === "DENY+ALLOW+EXCEPT") ? "DENY" : "ALLOW";
+  if (mode === "DENY+ALLOW+EXCEPT") {
+    if (matches(rules.allow)) action = "ALLOW";
+    if (matches(rules.deny)) action = "DENY";
+    if (matches(rules.except)) action = "ALLOW";
+  } else {
+    // ALLOW+DENY+EXCEPT
+    if (matches(rules.deny)) action = "DENY";
+    if (matches(rules.allow)) action = "ALLOW";
+    if (matches(rules.except)) action = "DENY";
+  }
+
+  console.debug("[SW] Policy Evaluation:", { url, action, domain });
+
+  // 2. Determine License Status & Trust
+  const nowTime = Date.now();
+  const expiryTime = new Date(license_expiry).getTime();
+  const isExpired = license_status === "EXPIRED" || nowTime > expiryTime;
+  
+  const isTrusted = matches(acl.trusted_contexts);
+  const trust = isTrusted ? "TRUSTED" : "UNTRUSTED";
+
+  // 3. Determine Salt Label
+  let salt = isTrusted ? "smd-nano" : "smd-nano-decoy";
+  if (isExpired) {
+    salt = "smd-nano-expired";
+  } else {
+    for (const entry of overrides) {
+      if (patternToRegex(entry.pattern).test(domain) || patternToRegex(entry.pattern).test(url)) {
+        salt = entry.salt;
+        break;
+      }
+    }
+  }
+
+  // 4. Calculate Automated Counter: int( ((now - release)/(86400) + 89)/90 )
+  const releaseTime = new Date(created_at).getTime();
+  const daysSinceRelease = (nowTime - releaseTime) / (1000 * 60 * 60 * 24);
+  const autoCounter = Math.floor((daysSinceRelease + 89) / 90) || 1;
+
+  // Calculate Counter at Expiration
+  const daysAtExpiry = (expiryTime - releaseTime) / (1000 * 60 * 60 * 24);
+  const expirationCounter = Math.floor((daysAtExpiry + 89) / 90) || 1;
+
+
+  return { action, trust, salt, domain, autoCounter, isExpired, expirationCounter };
+}
 
 function normalizeDomain(urlStr) {
   try {
     const u = new URL(urlStr);
-    if (u.protocol !== "https:") return "insecure";
-    // TODO (production): use eTLD+1 (Public Suffix List) parsing
-    return u.hostname.replace(/^www\./, "");
-  } catch {
+    let domain = "unknown";
+    if (u.protocol === "file:") {
+      domain = u.pathname.split("/").pop() || "localfile";
+    } else {
+      domain = u.hostname.replace(/^www\./, "");
+    }
+    return domain;
+  } catch (e) {
     return "unknown";
   }
 }
 
-function toBase64Url(bytes) {
-  const bin = String.fromCharCode(...bytes);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
 function pickUniform(bytes, idxRef, n) {
-  const max = Math.floor(256 / n) * n; // rejection sampling threshold
+  // Rejection sampling threshold: Ensures no character/position is statistically favored (no modulo bias).
+  const max = Math.floor(256 / n) * n; 
   while (idxRef.i < bytes.length) {
     const b = bytes[idxRef.i++];
     if (b < max) return b % n;
@@ -26,90 +142,77 @@ function pickUniform(bytes, idxRef, n) {
   throw new Error("Not enough entropy bytes");
 }
 
-function encodeUniform(bytes, charset, length, idxRef) {
-  const out = [];
-  const N = charset.length;
+async function derivePassword({ master, domain, user, counter, length, mode, saltLabel, url }) {
+  const enc = new TextEncoder();
 
-  while (out.length < length) {
-    const j = pickUniform(bytes, idxRef, N);
-    out.push(charset[j]);
-  }
-  return out.join("");
-}
+  // 1. Derive site-specific base key (IKM) from master secret using PBKDF2.
+  const masterKey = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(master),
+    "PBKDF2",
+    false,
+    ["deriveBits"]
+  );
 
-function enforceComplexityUpdated(pw, entropyBytes, idxRef) {
-  const lower = "abcdefghijklmnopqrstuvwxyz";
-  const upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  const digit = "0123456789";
-  const sym = "!@#$%^&*()-_=+[]{};:,.?";
+  const salt = enc.encode(`${saltLabel}|${domain}`);
+  
+  const ikm = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt, iterations: 200_000, hash: "SHA-256" },
+    masterKey,
+    256 // 32 bytes
+  );
 
-  const s = pw.split("");
-  const L = s.length;
-  if (L < 4) return pw;
+  // 2. Expand entropy using HKDF.
+  const hkdfKey = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+  const info = enc.encode(`${domain}|${user || ""}|${counter}`);
+  const sig = new Uint8Array(await crypto.subtle.deriveBits(
+    { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info },
+    hkdfKey,
+    1024 // 128 bytes
+  ));
 
-  const needLower = !/[a-z]/.test(pw);
-  const needUpper = !/[A-Z]/.test(pw);
-  const needDigit = !/[0-9]/.test(pw);
-  const needSym = !/[^A-Za-z0-9]/.test(pw);
-
-  // Choose 4 distinct positions deterministically (NOT fixed 0/1/2/3)
-  const used = new Set();
+  const idxRef = { i: 0 };
+  const L = length;
+  
+  // 3. Merged Complexity Implementation...
   const pos = [];
-  while (pos.length < 4) {
-    const p = pickUniform(entropyBytes, idxRef, L);
+  const used = new Set();
+  while (pos.length < 4 && pos.length < L) {
+    const p = pickUniform(sig, idxRef, L);
     if (!used.has(p)) {
       used.add(p);
       pos.push(p);
     }
   }
 
-  let k = 0;
-  if (needLower) s[pos[k++]] = lower[pickUniform(entropyBytes, idxRef, lower.length)];
-  if (needUpper) s[pos[k++]] = upper[pickUniform(entropyBytes, idxRef, upper.length)];
-  if (needDigit) s[pos[k++]] = digit[pickUniform(entropyBytes, idxRef, digit.length)];
-  if (needSym) s[pos[k++]] = sym[pickUniform(entropyBytes, idxRef, sym.length)];
+  const charsets = [
+    "abcdefghijklmnopqrstuvwxyz",
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "0123456789",
+    "!@#$%^&*()-_=+[]{};:,.?"
+  ];
+  const fullCharset =
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{};:,.?";
 
-  return s.join("");
-}
+  const res = new Array(L);
 
-async function derivePassword({ master, domain, user, counter, length, mode }) {
-  const enc = new TextEncoder();
-
-  const masterKey = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(master),
-    "PBKDF2",
-    false,
-    ["deriveKey"]
-  );
-
-  const salt = enc.encode(`smd-nano|${domain}`);
-  const hmacKey = await crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 200_000, hash: "SHA-256" },
-    masterKey,
-    { name: "HMAC", hash: "SHA-256", length: 256 },
-    false,
-    ["sign"]
-  );
-
-  const msg = enc.encode(`${domain}|${user || ""}|${counter}`);
-  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", hmacKey, msg));
-
-  // Use sig as deterministic entropy stream
-  const idxRef = { i: 0 };
-
-  let pw = "";
-  if (mode === "base64url") {
-    // base64url is fine, but we still apply complexity fixups below
-    pw = toBase64Url(sig).slice(0, length);
-  } else {
-    const charset =
-      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{};:,.?";
-    pw = encodeUniform(sig, charset, length, idxRef); // no modulo bias
+  for (let k = 0; k < pos.length; k++) {
+    const cs = charsets[k];
+    res[pos[k]] = cs[pickUniform(sig, idxRef, cs.length)];
   }
 
-  pw = enforceComplexityUpdated(pw, sig, idxRef).slice(0, length);
-  return pw;
+  for (let i = 0; i < L; i++) {
+    if (res[i] === undefined) {
+      if (mode === "base64url") {
+        const b64 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
+        res[i] = b64[pickUniform(sig, idxRef, b64.length)];
+      } else {
+        res[i] = fullCharset[pickUniform(sig, idxRef, fullCharset.length)];
+      }
+    }
+  }
+
+  return res.join("");
 }
 
 async function getTabUrl(tabId) {
@@ -123,28 +226,51 @@ function now() {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
+    if (msg?.type === "SMPNANO_GET_POLICY") {
+      const policy = await getPolicy(msg.url);
+      return sendResponse(policy);
+    }
+
+    if (msg?.type === "SMPNANO_PASTE_CLEARED") {
+      chrome.runtime.sendMessage({ type: "SMPNANO_PASTE_CLEARED_RELAY" });
+      return sendResponse({ ok: true });
+    }
+
+    if (msg?.type === "SMPNANO_RESET_MASTER_SECRET") {
+      // Forward the event to the popup if it's open
+      chrome.runtime.sendMessage({ type: "SMPNANO_RESET_MASTER_SECRET_RELAY" });
+      return sendResponse({ ok: true });
+    }
+
     if (msg?.type === "SMDNANO_GENERATE") {
       const { master, tabId, url, domain, user, counter, length, mode } = msg;
 
-      if (!master) return sendResponse({ ok: false, error: "Missing master secret" });
-      if (!tabId || !url) return sendResponse({ ok: false, error: "Missing tab context" });
-
-      const dom = normalizeDomain(url);
-      if (dom !== domain || dom === "insecure" || dom === "unknown") {
-        return sendResponse({ ok: false, error: "Refusing: insecure/unknown domain" });
+      const policy = await getPolicy(url);
+      if (policy.action === "DENY") {
+        return sendResponse({ ok: false, error: "Access Denied by Policy" });
+      }
+      if (policy.domain !== domain) {
+        return sendResponse({ ok: false, error: "Context Mismatch: Domain changed" });
       }
 
-      const password = await derivePassword({ master, domain, user, counter, length, mode });
+      const password = await derivePassword({ 
+        master, 
+        domain: policy.domain, 
+        user, 
+        counter, 
+        length, 
+        mode, 
+        saltLabel: policy.salt, 
+        url 
+      });
 
-      // Short expiry to reduce clickjacking/TOCTOU risk (e.g., 20 seconds)
       const expiresAt = now() + 20_000;
-
-      cache.set(tabId, { domain, url, password, expiresAt });
+      cache.set(tabId, { domain: policy.domain, url, password, user, trust: policy.trust, expiresAt });
 
       return sendResponse({
         ok: true,
         password,
-        ctx: { tabId, domain, url, expiresAt },
+        ctx: { tabId, domain: policy.domain, url, expiresAt, trust: policy.trust },
       });
     }
 
@@ -159,32 +285,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
 
       const urlNow = await getTabUrl(tabId);
-      const domNow = normalizeDomain(urlNow);
+      const policyNow = await getPolicy(urlNow);
 
-      // TOCTOU protection: same tab + same domain snapshot required
-      if (domNow !== entry.domain) {
+      // TOCTOU protection
+      if (policyNow.domain !== entry.domain) {
         cache.delete(tabId);
         return sendResponse({
           ok: false,
-          error: `Refusing: context changed (was ${entry.domain}, now ${domNow})`,
+          error: `Refusing: context changed (was ${entry.domain}, now ${policyNow.domain})`,
         });
       }
 
-      // Send fill to content script (one-time). Content script will refuse if iframe/non-https.
-      await chrome.tabs.sendMessage(tabId, {
+      // Send fill to content script with trust level
+      chrome.tabs.sendMessage(tabId, {
         type: "SMPNANO_FILL",
         password: entry.password,
+        username: entry.user,
         domain: entry.domain,
-      });
+        trust: entry.trust
+      }, (resp) => sendResponse(resp));
 
-      // One-time use: wipe immediately
-      cache.delete(tabId);
-
-      return sendResponse({ ok: true });
+      return true;
     }
 
     return sendResponse({ ok: false, error: "Unknown message" });
   })().catch((e) => sendResponse({ ok: false, error: e?.message || "Error" }));
 
-  return true; // keep async channel open
+  return true; 
 });

@@ -1,8 +1,64 @@
 body { font-family: system-ui, Arial, sans-serif; width: 340px; padding: 12px; }
 label { display: block; margin-top: 8px; font-size: 12px; color: #333; }
 input, select, button { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; }
+.input-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.input-container input {
+  padding-right: 32px;
+}
+.peek-icon {
+  position: absolute;
+  right: 8px;
+  top: 55%;
+  transform: translateY(-50%);
+  cursor: pointer;
+  user-select: none;
+  font-size: 16px;
+  opacity: 0.6;
+}
+.peek-icon:hover {
+  opacity: 1;
+}
 .row { display: flex; gap: 10px; }
 .row > div, .row > button { flex: 1; }
-.out { background: #f5f5f5; padding: 10px; min-height: 48px; white-space: pre-wrap; }
+.out { background: #f5f5f5; padding: 10px; min-height: 48px; white-space: pre-wrap; margin-top: 4px; }
 .muted { color: #666; }
 .small { font-size: 12px; }
+
+/* New header styles */
+.app-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #eee;
+}
+
+.app-icon {
+  width: 32px;
+  height: 32px;
+  margin-right: 10px;
+}
+
+.header-text {
+  display: flex;
+  flex-direction: column;
+}
+
+#appTitle {
+  margin: 0;
+  font-size: 1.2em;
+  color: #333;
+}
+
+.app-version, .policy-release {
+  font-size: 0.8em;
+  color: #666;
+}
+
+.policy-release {
+  margin-top: 2px;
+}

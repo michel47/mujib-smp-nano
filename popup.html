@@ -5,39 +5,50 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <h3>SMP Nano</h3>
+    <header class="app-header">
+      <img id="appIcon" src="" alt="🛡" class="app-icon" />
+      <div class="header-text">
+        <h3 id="appTitle"></h3>
+        <span id="appVersion" class="app-version"></span>
+        <span id="policyRelease" class="policy-release"></span>
+      </div>
+    </header>
 
     <div class="muted" id="siteLine">Site: …</div>
 
     <label>Master secret (not stored)</label>
-    <input id="master" type="password" autocomplete="off" />
+    <div class="input-container">
+      <input id="master" type="password" autocomplete="off" tabindex="2" />
+      <span id="peek" class="peek-icon" title="Peek">👁️</span>
+    </div>
 
     <div class="row">
       <div>
         <label>Username (optional)</label>
-        <input id="user" autocomplete="off" />
+        <input id="user" autocomplete="off" tabindex="1" />
       </div>
       <div>
         <label>Counter</label>
-        <input id="ctr" type="number" min="1" value="1" />
+        <input id="ctr" type="number" min="1" value="1" tabindex="4" />
       </div>
     </div>
 
     <div class="row">
       <div>
         <label>Length</label>
-        <input id="len" type="number" min="12" max="64" value="20" />
+        <input id="len" type="number" min="12" max="64" value="20" tabindex="5" />
       </div>
       <div>
         <label>Mode</label>
-        <select id="mode">
-          <option value="base64url" selected>base64url</option>
-          <option value="alnumsym">alnum+sym</option>
+        <select id="mode" tabindex="6">
+          <option value="alpnumsym" selected>alphanum+symb</option>
+          <option value="base64url">base64url</option>
+          <option value="uuid4">uuid</option>
         </select>
       </div>
     </div>
 
-    <button id="gen">Generate</button>
+    <button id="gen" tabindex="3">Generate</button>
 
     <pre id="out" class="out"></pre>
 

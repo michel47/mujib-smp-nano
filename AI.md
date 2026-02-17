@@ -45,7 +45,7 @@ This document defines the mandatory guidelines and design principles for any AI 
 
 To prevent errors and maintain version control system (RCS) integrity:
 
-*   **Checkout & Lock**: Before ANY modification, always acquire a lock using `co -l -w"aiagent" <file_path>`. If the file already exists locally and is writable, rename it first (e.g., `mv <file_path> <file_path>.bak`) to bypass interactive prompts during checkout.
+*   **Checkout & Lock**: Before ANY modification, always acquire a lock using `getlock <file_path>` or `co -l <file_path>`. If the file already exists locally and is writable, rename it first (e.g., `mv <file_path> <file_path>.bak`) to bypass interactive prompts during checkout.
 *   **Temporary Buffer Editing**: Always perform modifications in a temporary buffer. Do not directly edit the checked-out file.
 *   **Atomic Update**: Once edits are finalized in the buffer, update the content of the checked-out file in a single operation (e.g., by copying the buffer content to the file).
-*   **Commit on Approval**: After implementing changes and receiving user approval, commit the updated file using `ci -w"aiagent" -m"<concise_and_clear_commit_message>" <file_path>`. **Ensure the commit message is properly quoted to avoid shell interpretation errors.** For example: `ci -w"aiagent" -m"Update AI.md: Add explicit RCS commit message format guideline." AI.md`.
+*   **Commit**: After implementing changes, commit the updated file using `ci -w"aiagent" -m"<concise_and_clear_commit_message>" <file_path>`. **Ensure the commit message is properly quoted to avoid shell interpretation errors.** For example: `ci -w"aiagent" -m"Update AI.md: Add explicit RCS commit message format guideline." AI.md`.
