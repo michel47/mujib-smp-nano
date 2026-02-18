@@ -3,7 +3,19 @@
   "name": "SMD Nano",
   "version": "1.0.0",
   "description": "Vaultless password manager: derives per-site passwords, stores nothing.",
-  "action": { "default_popup": "popup.html#4321" },
+  "action": {
+    "default_popup": "popup.html#4321",
+    "default_icon": {
+      "16": "icon16.png",
+      "32": "icon32.png",
+      "48": "icon48.png"
+    }
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png", 
+    "128": "icon128.png"
+  },
   "background": {
     "service_worker": "sw.js",
     "type": "module"
@@ -11,7 +23,8 @@
   "permissions": [
     "activeTab",
     "clipboardWrite",
-    "tabs"
+    "tabs",
+    "storage"
   ],
   "host_permissions": ["<all_urls>"],
   "content_scripts": [
@@ -23,7 +36,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["1f6e1g.svg", "policy.json"],
+      "resources": ["1f6e1g.svg", "policy.json", "smd-lipyc.png"],
       "matches": ["<all_urls>"]
     }
   ]

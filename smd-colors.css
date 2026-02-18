@@ -1,0 +1,18 @@
+:root {
+  --color-primary: #04bf33;
+  --color-primary-dark: #012611;
+  --color-text: #212529;
+  --color-background: rgba(255, 255, 255, 0.95);
+  --color-body-background: #e9ecef;
+  
+  --color-danger: #dc3545;
+  --color-danger-light: #f8d7da;
+  --color-danger-dark: #721c24;
+
+  --color-info-bg: #e3f2fd;
+    --color-info-border: #1976d2;
+  
+    --background-image: url("smd-background.webp");
+    --logo-image: url("smd-logo.svg");
+  }
+  

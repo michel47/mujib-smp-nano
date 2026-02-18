@@ -1,0 +1,93 @@
+body { 
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; 
+    display: flex; 
+    justify-content: center; 
+    align-items: center; 
+    height: 100vh; 
+    margin: 0;
+    background-color: #e9ecef;
+    background-image: url("../smd-lipyc.png");
+    background-size: cover;
+    background-position: center;
+}
+.card { 
+    background: rgb(202 256 236 / 45%); 
+    padding: 2rem; 
+    border-radius: 12px; 
+    box-shadow: 0 10px 25px rgba(0,0,0,0.1); 
+    width: 100%; 
+    max-width: 400px; 
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}
+h1 { 
+    margin-top: 0; 
+    font-size: 1.75rem; 
+    color: #012611; 
+    font-weight: 800;
+    letter-spacing: -0.025em;
+}
+.form-group { margin-bottom: 1.25rem; }
+label { 
+    display: block; 
+    margin-bottom: 0.5rem; 
+    font-weight: 700; 
+    font-size: 0.85rem; 
+    color: #012611; 
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+input { 
+    width: 100%; 
+    padding: 0.75rem 1rem; 
+    border: 1px solid #ced4da; 
+    border-radius: 8px; 
+    box-sizing: border-box; 
+    font-size: 1rem; 
+    transition: all 0.2s;
+    background: rgba(255, 255, 255, 0.9);
+}
+input:focus {
+    outline: none;
+    background: #ffffff;
+    border-color: #04bf33;
+    box-shadow: 0 0 0 4px rgba(4, 191, 51, 0.1);
+}
+button { 
+    width: 100%; 
+    padding: 0.875rem; 
+    background-color: #04bf33; 
+    color: white; 
+    border: none; 
+    border-radius: 8px; 
+    font-weight: 700; 
+    font-size: 1rem; 
+    cursor: pointer; 
+    margin-top: 1rem; 
+    transition: all 0.2s;
+}
+button:hover { 
+    background-color: #03a62c; 
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(4, 191, 51, 0.2);
+}
+.link { 
+    display: block; 
+    text-align: center; 
+    margin-top: 1.25rem; 
+    color: #03641b; /* Darkened further for maximum contrast */
+    text-decoration: none; 
+    font-size: 0.95rem; 
+    font-weight: 700;
+}
+.link:hover { text-decoration: underline; color: #012611; }
+.warn { 
+    background: rgba(255, 243, 205, 0.9); 
+    color: #856404; 
+    padding: 0.75rem 1rem; 
+    border-radius: 8px; 
+    font-size: 0.85rem; 
+    margin-bottom: 1.5rem; 
+    border: 1px solid #ffeeba; 
+    font-weight: 600;
+}

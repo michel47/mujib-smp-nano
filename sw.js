@@ -3,6 +3,17 @@
 const cache = new Map();
 let acl = null;
 
+// Persistence: One-time installation seeds to harden derivation against cross-install attacks.
+chrome.runtime.onInstalled.addListener(async (details) => {
+  if (details.reason === 'install') {
+    await chrome.storage.local.set({
+      installSeed: crypto.randomUUID(),
+      userSeed: crypto.randomUUID()
+    });
+    console.log("[SW] Installation seeds generated and stored.");
+  }
+});
+
 async function loadACL() {
   try {
     const resp = await fetch(chrome.runtime.getURL('policy.json'));
@@ -142,6 +153,22 @@ function pickUniform(bytes, idxRef, n) {
   throw new Error("Not enough entropy bytes");
 }
 
+function generateDeterministicUUID(sig, idxRef) {
+  // UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+  // where y is 8, 9, a, or b.
+  const bytes = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) {
+    bytes[i] = sig[idxRef.i++];
+  }
+  // Set version 4
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  // Set variant 10 (8, 9, a, or b)
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0'));
+  return `${hex.slice(0, 4).join('')}-${hex.slice(4, 6).join('')}-${hex.slice(6, 8).join('')}-${hex.slice(8, 10).join('')}-${hex.slice(10, 16).join('')}`;
+}
+
 async function derivePassword({ master, domain, user, counter, length, mode, saltLabel, url }) {
   const enc = new TextEncoder();
 
@@ -162,9 +189,13 @@ async function derivePassword({ master, domain, user, counter, length, mode, sal
     256 // 32 bytes
   );
 
-  // 2. Expand entropy using HKDF.
+  // 2. Retrieve installation seeds to harden the derivation mix.
+  const { installSeed, userSeed } = await chrome.storage.local.get(['installSeed', 'userSeed']);
+
+  // 3. Expand entropy using HKDF.
+  // We incorporate the seeds into the HKDF info block to ensure per-install uniqueness.
   const hkdfKey = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
-  const info = enc.encode(`${domain}|${user || ""}|${counter}`);
+  const info = enc.encode(`${domain}|${user || ""}|${counter}|${installSeed || ''}|${userSeed || ''}`);
   const sig = new Uint8Array(await crypto.subtle.deriveBits(
     { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info },
     hkdfKey,
@@ -173,42 +204,53 @@ async function derivePassword({ master, domain, user, counter, length, mode, sal
 
   const idxRef = { i: 0 };
   const L = length;
-  
-  // 3. Merged Complexity Implementation...
-  const pos = [];
-  const used = new Set();
-  while (pos.length < 4 && pos.length < L) {
-    const p = pickUniform(sig, idxRef, L);
-    if (!used.has(p)) {
-      used.add(p);
-      pos.push(p);
-    }
+
+  if (mode === "uuid4") {
+    return generateDeterministicUUID(sig, idxRef);
   }
-
-  const charsets = [
-    "abcdefghijklmnopqrstuvwxyz",
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-    "0123456789",
-    "!@#$%^&*()-_=+[]{};:,.?"
-  ];
-  const fullCharset =
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{};:,.?";
-
+  
+  // 4. Merged Complexity Implementation
   const res = new Array(L);
 
-  for (let k = 0; k < pos.length; k++) {
-    const cs = charsets[k];
-    res[pos[k]] = cs[pickUniform(sig, idxRef, cs.length)];
+  if (mode === "alpnumsym") {
+    // Pre-select 4 distinct positions for required categories
+    const pos = [];
+    const used = new Set();
+    while (pos.length < 4 && pos.length < L) {
+      const p = pickUniform(sig, idxRef, L);
+      if (!used.has(p)) {
+        used.add(p);
+        pos.push(p);
+      }
+    }
+
+    const charsets = [
+      "abcdefghijklmnopqrstuvwxyz",
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "0123456789",
+      "!@#$%^&*()-_=+[]{};:,.?"
+    ];
+
+    // Fill mandatory positions first
+    for (let k = 0; k < pos.length; k++) {
+      const cs = charsets[k];
+      res[pos[k]] = cs[pickUniform(sig, idxRef, cs.length)];
+    }
+  } else if (mode === "base64url") {
+    // Special requirement: ensure at least one '-' or '_'
+    const p = pickUniform(sig, idxRef, L);
+    const spec = "-_";
+    res[p] = spec[pickUniform(sig, idxRef, spec.length)];
   }
 
+  const fullCharset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{};:,.?";
+  const b64Charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
+
+  // Fill remaining positions uniformly
   for (let i = 0; i < L; i++) {
     if (res[i] === undefined) {
-      if (mode === "base64url") {
-        const b64 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
-        res[i] = b64[pickUniform(sig, idxRef, b64.length)];
-      } else {
-        res[i] = fullCharset[pickUniform(sig, idxRef, fullCharset.length)];
-      }
+      const currentCharset = (mode === "base64url") ? b64Charset : fullCharset;
+      res[i] = currentCharset[pickUniform(sig, idxRef, currentCharset.length)];
     }
   }
 
